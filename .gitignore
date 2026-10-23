@@ -1,0 +1,9 @@
+# OEIS data: oeisdata clone (~680k files, its own git history), seqs.pkl and the search cache (~3.7 GB together).
+data/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
