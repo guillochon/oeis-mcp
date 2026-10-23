@@ -48,10 +48,14 @@ python -m oeis_mcp.search --build-ext    # optional: DATA + b-file terms (needs 
 ## Install and register
 
 ```bash
+git clone https://github.com/guillochon/oeis-mcp.git && cd oeis-mcp
 uv venv --python 3.12 .venv
-uv pip install --python .venv/Scripts/python.exe -e .
-claude mcp add --scope user oeis -- C:/Users/guill/oeis-mcp/.venv/Scripts/python.exe -m oeis_mcp.server
+uv pip install --python .venv/Scripts/python.exe -e .     # .venv/bin/python on Linux/macOS
+claude mcp add --scope user oeis -- "$PWD/.venv/Scripts/python.exe" -m oeis_mcp.server
 ```
+
+Then set up `data/` as described above. The OEIS data itself is not part of this repo; it is the
+[OEIS](https://oeis.org)'s, under its own [license](https://oeis.org/LICENSE) (CC BY-SA 4.0).
 
 ## Command line and Python
 
