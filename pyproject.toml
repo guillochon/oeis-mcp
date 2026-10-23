@@ -12,6 +12,7 @@ dependencies = [
     "mcp>=2",
     "numpy",
     "pandas",
+    "python-flint",
 ]
 
 [project.scripts]

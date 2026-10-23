@@ -1,7 +1,8 @@
 # oeis-mcp
 
 A fast index over a local snapshot of the [OEIS](https://oeis.org), and an [MCP](https://modelcontextprotocol.io)
-server that lets Claude Code (or any MCP client) search it without going to oeis.org.
+server that lets Claude Code (or any MCP client) search it without going to oeis.org. It also
+identifies a sequence as a transform of a known one, guesses recurrences, and evaluates the relations entries state.
 
 Lookups take well under a second. The index files are memory-mapped, so the server process stays small (tens of MB).
 The pages it touches sit in the OS file cache, and the OS takes them back when it needs the memory.
@@ -17,6 +18,9 @@ The pages it touches sit in the OS file cache, and the OS takes them back when i
 | `get_raw_entry` | The entry's exact internal-format record (`%S %N %C ... %E`), including extensions |
 | `get_summaries` | Name, keywords and first terms of many entries at once |
 | `get_bfile` | Lines of the entry's b-file, when the clone has it (git lfs) |
+| `identify_transform` | Is this sequence (terms, or an A-number) a chain of up to 3 of ~140 transforms of a known one? A local superseeker (~2 s at depth 2) |
+| `guess_recurrence` | Guess a P-recursive recurrence (polynomial coefficients, order and degree ≤ 6) and predict terms |
+| `extend_from_formulas` | Evaluate an entry's own stated relations (`a(n) = ...A######(n)...`, "Euler transform of A######", ...) on the other sequences' current terms, giving new terms |
 | `index_info` | Snapshot date and what is indexed |
 
 Terms are passed and returned as comma-separated strings, because OEIS terms routinely exceed what JSON numbers
@@ -60,8 +64,10 @@ python -m oeis_mcp.search -t "plane partitions" -f all
 python -m oeis_mcp.search A000108
 ```
 
-And from Python: `from oeis_mcp.search import TermIndex, text_search, field_line, entry`. Only numpy is needed for
-search, and pandas for building. The `mcp` package is only needed for the server.
+And from Python: `from oeis_mcp.search import TermIndex, text_search, field_line, entry`, plus `oeis_mcp.identify`
+(`identify`), `oeis_mcp.recur` (`guess`, `predict`), `oeis_mcp.formulas` (`init`, `extend`) and
+`oeis_mcp.transform_lib` (`all_transforms`, `apply`; `python -m oeis_mcp.transform_lib` self-tests). Only numpy is
+needed for search, pandas for building, python-flint for recurrences, and `mcp` for the server.
 
 ## How the index works
 

@@ -1,4 +1,6 @@
-"""MCP server over the local OEIS snapshot (oeis_mcp.search): term, text and entry lookups.
+"""MCP server over the local OEIS snapshot: term, text and entry lookups (oeis_mcp.search), transform
+identification (oeis_mcp.identify), recurrence guessing (oeis_mcp.recur) and stated-formula evaluation
+(oeis_mcp.formulas).
 
     python -m oeis_mcp.server          # stdio transport
 
@@ -230,6 +232,117 @@ def get_bfile(anum: str, start: int = 0, count: int = 200) -> dict:
                 rows.append(f"{parts[0]} {parts[1]}")
             total += 1
     return {"anum": a, "available": True, "total_lines": total, "start": start, "lines": "\n".join(rows)}
+
+
+def _target(terms, anum, offset, ext):
+    """(terms, offset, row to exclude, label) from either explicit terms or an A-number."""
+    if (terms is None) == (anum is None):
+        raise ToolError("give exactly one of terms or anum")
+    if anum is not None:
+        I = ix(ext)
+        i = _row(I, anum)
+        return I.terms(i), int(I.offsets[i]), i, I.anums[i]
+    return _parse(terms), offset, None, "query"
+
+
+@mcp.tool(annotations=READ_ONLY)
+def identify_transform(terms: str | None = None, anum: str | None = None, offset: int = 0, depth: int = 2,
+                       ext: bool = False, time_budget: float = 60, limit: int = 15) -> dict:
+    """Is this sequence a simple transform of a known OEIS sequence? A local "superseeker".
+
+    Give either terms (comma-separated, with their offset, i.e. the n of the first term) or an anum (its own terms;
+    the entry itself is never reported). Every chain of up to `depth` (1-3) of ~140 primitive transforms is
+    applied (x or / by n!, (2n)!, 2^n, n, Catalan, Bell, ...; binomial, Euler, weigh, EGF exp/log, INVERT,
+    Stirling, Moebius and their inverses; partial sums, differences, bisections, signs, +-1, ...) and each result
+    is looked up in the term index. Depth 1 takes about a second; depth 2 (~20k lookups) can take tens of
+    seconds, and stops after time_budget seconds (complete=false).
+    A hit needs a long, informative common run (>= 6 terms at depth <= 1, >= 8 at depth 2, >= 10 at depth 3) and
+    agreement up to the end of one of the two. Each hit says which side has more terms:
+      match_extends_query: the match continues past your terms (it may give new terms of your sequence);
+      query_extends_match: your transformed terms continue past the match's DATA.
+    Hits are empirical identities, to be proved before use."""
+    import time
+    from oeis_mcp.identify import identify
+    if not 1 <= depth <= 3:
+        raise ToolError("depth must be 1, 2 or 3")
+    I = ix(ext)
+    t, o, excl, label = _target(terms, anum, offset, ext)
+    z = next((k for k, x in enumerate(t) if abs(x) > 1), len(t))
+    if z > 3:  # long 0/1 prefix: transforms of it match closed forms
+        t, o = t[z:], o + z
+    if len(t) < 6 or sum(abs(x) >= 100 for x in t) < 4:
+        raise ToolError("too little information: need >= 6 terms (after any 0/1 prefix) with >= 4 of size >= 100")
+    t0 = time.time()
+    hits, nq, complete = identify(I, t, o, depth, exclude=excl, deadline=t0 + time_budget)
+    best = {}
+    for h in sorted(hits, key=lambda h: (h["depth"], -h["run"])):
+        best.setdefault(h["sid"], h)
+    out = []
+    for h in sorted(best.values(), key=lambda h: (h["depth"], -h["run"]))[:limit]:
+        side = ("match_extends_query" if h["extend_target"] else "query_extends_match" if h["extend_linked"]
+                else "same_end")
+        out.append(dict(_summary(I, h["sid"]), transform=h["transform"], depth=h["depth"], run=h["run"],
+                        run_digits=h["run_digits"], side=side, extra_terms=h["extra_terms"]))
+    return {"target": label, "complete": complete, "lookups": nq, "seconds": round(time.time() - t0, 1),
+            "matches": len(best), "shown": len(out), "hits": out,
+            "reading": "transform applied to the target equals the match on `run` terms"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def guess_recurrence(terms: str | None = None, anum: str | None = None, offset: int = 0, ext: bool = True,
+                     max_order: int = 6, max_degree: int = 6, spare: int = 6, n_predict: int = 20) -> dict:
+    """Guess a P-recursive (holonomic) recurrence sum_{i=0..r} p_i(n) a(n-i) = 0 with deg p_i <= d, and predict
+    further terms from it.
+
+    Give either terms (comma-separated, with the offset = n of the first term) or an anum (its terms; ext=True
+    uses DATA + b-file terms). (r, d) are tried in order of the number of unknowns (r+1)(d+1); the first whose
+    kernel is one-dimensional (mod a 61-bit prime, then exactly over Z) with at least `spare` more equations than
+    unknowns is returned. Constant coefficients are d = 0. A guess, not a proof; `spare_equations` says how much
+    the data over-determines it, and `integral` whether all predicted terms came out integers."""
+    from oeis_mcp import recur
+    t, o, _, label = _target(terms, anum, offset, ext)
+    g = recur.guess(t, o, max_order, max_degree, spare)
+    if g is None:
+        return {"target": label, "found": False, "n_terms": len(t),
+                "searched": f"order <= {max_order}, degree <= {max_degree}, >= {spare} spare equations"}
+    r, d, c = g
+    pred, integral = recur.predict(t, o, r, d, c, n_predict)
+    return {"target": label, "found": True, "order": r, "degree": d, "recurrence": recur.recurrence_str(r, d, c),
+            "n_terms": len(t), "spare_equations": len(t) - r - (r + 1) * (d + 1), "integral": integral,
+            "predicted_from_n": o + len(t), "predicted": ",".join(map(str, pred))}
+
+
+_formulas_lock = __import__("threading").Lock()
+
+
+@mcp.tool(annotations=READ_ONLY)
+def extend_from_formulas(anum: str, ext: bool = True, max_new: int = 40) -> dict:
+    """Can an entry be extended from its own stated relations? Parses the entry's "a(n) = <expr in n, a(), and
+    A######()>" FORMULA lines and its "Euler / binomial / INVERT / ... transform of A######", "partial sums of
+    A######" phrases (NAME, COMMENTS, FORMULA), checks each against the entry's known terms (all but at most the
+    first 3 must agree, at least 6), and evaluates it past them on the other sequences' current terms (ext=True:
+    DATA + b-file). Lines flagged as conjectural ("appears", "seems", "empirical", ...) are skipped.
+    Each relation that gives new terms is returned with the new terms (from n = offset + n_terms on).
+    The relation is the entry's own claim; check its source before using the terms."""
+    from oeis_mcp import formulas
+    I = ix(ext)
+    i = _row(I, anum)
+    with _formulas_lock:
+        formulas.init(I)
+        hits = formulas.extend(i)
+    t = I.terms(i)
+    by_terms = {}  # relations giving the same new terms are one result ("28*A000290(n) = 14*A001105(n) = ...")
+    for h in sorted(hits, key=lambda h: -h["n_new"]):
+        g = by_terms.get(h["new_terms"])
+        if g is not None:
+            g["equivalent"].append(h["relation"])
+            continue
+        by_terms[h["new_terms"]] = {"kind": h["kind"], "relation": h["relation"], "equivalent": [], "parts": h["parts"],
+                                    "agree": h["agree"], "head_mismatch": h["head_mismatch"], "n_new": h["n_new"],
+                                    "new_terms": ",".join(h["new_terms"].split()[:max_new]), "source": h["source"]}
+    out = list(by_terms.values())
+    return {"anum": I.anums[i], "n_terms": len(t), "next_n": int(I.offsets[i]) + len(t),
+            "terms_source": "DATA+b-file" if ext else "DATA", "relations": out}
 
 
 @mcp.tool(annotations=READ_ONLY)
