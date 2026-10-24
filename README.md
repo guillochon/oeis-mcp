@@ -31,19 +31,34 @@ hold exactly. `ext=True` searches DATA extended with real b-file terms (up to 25
 Everything lives in `data/`, which is not tracked. The location can be changed with the `OEIS_DATA` env var.
 
 ```
-data/oeisdata/     git clone of github.com/oeis/oeisdata (~680k files); b-files fetched with git lfs
+data/oeisdata/     shallow clone of github.com/oeis/oeisdata (~680k files); b-files (~245k, ~35 GB) via git lfs
 data/seqs.pkl      one row per sequence (python -m oeis_mcp.parse, ~400 MB)
-data/oeis_cache/   the search index (python -m oeis_mcp.search --build, ~30 s; --build-ext for b-file terms)
+data/oeis_cache/   the search index (~3.3 GB; python -m oeis_mcp.search --build; --build-ext for b-file terms)
 ```
 
-To set it up from scratch, or refresh it:
+To set it up from scratch (the clone's `.lfsconfig` fetches no LFS content by default, so the b-files are asked
+for explicitly; skip those lines to work from DATA alone):
 
 ```bash
-git clone --depth 1 https://github.com/oeis/oeisdata.git data/oeisdata   # or: git -C data/oeisdata pull
-python -m oeis_mcp.parse                 # -> data/seqs.pkl
-python -m oeis_mcp.search --build        # automatic anyway when seqs.pkl is newer than the cache
-python -m oeis_mcp.search --build-ext    # optional: DATA + b-file terms (needs b-files via git lfs)
+git clone --depth 1 https://github.com/oeis/oeisdata.git data/oeisdata
+git -C data/oeisdata lfs fetch origin main -I "files/*/b*.txt" -X ""
+git -C data/oeisdata lfs checkout "files/*/b*.txt"
 ```
+
+To refresh it (the OEIS pushes a new snapshot daily):
+
+```bash
+git -C data/oeisdata fetch --depth 1 origin main
+git -C data/oeisdata lfs fetch origin origin/main -I "files/*/b*.txt" -X ""   # new b-files first, so the
+git -C data/oeisdata reset --hard origin/main                                 # checkout fills them in
+python -m oeis_mcp.parse                 # -> data/seqs.pkl
+python -m oeis_mcp.search --build        # also automatic when seqs.pkl is newer than the cache
+python -m oeis_mcp.search --build-ext    # DATA + b-file terms
+```
+
+The cache is rebuilt into staged `_new_*` files and swapped in at the end. Windows will not replace a file another
+process has open, so stop running oeis MCP servers (and search scripts) first; if one is still running, the swap is
+refused and the old index stays as it was.
 
 ## Install and register
 

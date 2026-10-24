@@ -61,6 +61,37 @@ def _p(name):
     return os.path.join(CACHE, name)
 
 
+_staged = []
+
+
+def _w(name):
+    """Where to write cache file `name`: a staged copy (_new_<name>), put in place by _commit()."""
+    _staged.append(name)
+    return _p("_new_" + name)
+
+
+def _commit():
+    """Swap the staged files in. Processes using the index (an oeis MCP server, a search script) hold its files
+    open, and Windows will not replace those: then nothing is swapped, the old index stays whole, and the new files
+    wait as _new_* until a rerun."""
+    names, moved = list(_staged), []
+    _staged.clear()
+    for n in names:
+        if os.path.exists(_p(n)):
+            try:
+                os.replace(_p(n), _p("_old_" + n))
+            except OSError as e:
+                for m in moved:
+                    os.replace(_p("_old_" + m), _p(m))
+                raise SystemExit(f"{_p(n)} is in use ({e.strerror}): stop whatever has the index open (oeis MCP "
+                                 "servers, search scripts) and rerun; nothing was replaced") from None
+            moved.append(n)
+    for n in names:
+        os.replace(_p("_new_" + n), _p(n))
+        if n in moved:
+            os.remove(_p("_old_" + n))
+
+
 def stale():
     m = _p("meta.json")
     return not os.path.exists(m) or json.load(open(m))["seqs_mtime"] != os.path.getmtime(SEQS)
@@ -71,9 +102,9 @@ def build():
     t0 = time.time()
     os.makedirs(CACHE, exist_ok=True)
     s = pd.read_pickle(SEQS).sort_values("anum").reset_index(drop=True)
-    np.save(_p("anum.npy"), s["anum"].str[1:].astype(np.uint32).to_numpy())
-    np.save(_p("offset.npy"), s["offset"].astype(np.int32).to_numpy())
-    np.save(_p("has_bfile.npy"), s["has_bfile"].astype(bool).to_numpy())
+    np.save(_w("anum.npy"), s["anum"].str[1:].astype(np.uint32).to_numpy())
+    np.save(_w("offset.npy"), s["offset"].astype(np.int32).to_numpy())
+    np.save(_w("has_bfile.npy"), s["has_bfile"].astype(bool).to_numpy())
 
     def lines(name, values):
         """One UTF-8 line per sequence; returns the byte offset of each line start (plus the end)."""
@@ -84,18 +115,18 @@ def build():
             pos += len(v)
             starts.append(pos)
         data = b"".join(parts)
-        with open(_p(name + ".txt"), "wb") as f:
+        with open(_w(name + ".txt"), "wb") as f:
             f.write(data)
         if name.startswith("text_"):  # ASCII-lowercased copy (same byte offsets) for fast literal search
-            with open(_p(name + ".lower.txt"), "wb") as f:
+            with open(_w(name + ".lower.txt"), "wb") as f:
                 f.write(data.lower())
         return np.array(starts, dtype=np.int64)
 
     kw = s["keywords"].map(lambda k: ",".join(k) if isinstance(k, (list, tuple)) else "")
     for f in TEXT_FIELDS:
-        np.save(_p(f"text_{f}_idx.npy"), lines(f"text_{f}", kw if f == "keywords" else s[f] if f in s else [""] * len(s)))
+        np.save(_w(f"text_{f}_idx.npy"), lines(f"text_{f}", kw if f == "keywords" else s[f] if f in s else [""] * len(s)))
     # Terms: byte offsets (ASCII, so chars == bytes).
-    np.save(_p("terms_idx.npy"), lines("terms", s["terms"]))
+    np.save(_w("terms_idx.npy"), lines("terms", s["terms"]))
 
     keys, sid, pos = [], [], []
     for i, ts in enumerate(s["terms"]):
@@ -108,10 +139,11 @@ def build():
                 pos.append(j)
     keys = np.array(keys, dtype=np.uint64)
     order = np.argsort(keys, kind="stable")
-    np.save(_p("keys.npy"), keys[order])
-    np.save(_p("sid.npy"), np.array(sid, dtype=np.uint32)[order])
-    np.save(_p("pos.npy"), np.array(pos, dtype=np.uint16)[order])
-    json.dump({"seqs_mtime": os.path.getmtime(SEQS), "n": len(s), "windows": len(keys)}, open(_p("meta.json"), "w"))
+    np.save(_w("keys.npy"), keys[order])
+    np.save(_w("sid.npy"), np.array(sid, dtype=np.uint32)[order])
+    np.save(_w("pos.npy"), np.array(pos, dtype=np.uint16)[order])
+    json.dump({"seqs_mtime": os.path.getmtime(SEQS), "n": len(s), "windows": len(keys)}, open(_w("meta.json"), "w"))
+    _commit()
     print(f"built oeis_cache: {len(s)} sequences, {len(keys)} windows in {time.time() - t0:.0f}s", file=sys.stderr)
 
 
@@ -187,16 +219,17 @@ def build_ext():
             sid.append(np.array(sb, dtype=np.uint32))
             wpos.append(np.array(pb, dtype=np.uint16))
             kb, sb, pb = [], [], []
-    with open(_p("ext_terms.txt"), "wb") as f:
+    with open(_w("ext_terms.txt"), "wb") as f:
         f.write(b"".join(parts))
-    np.save(_p("ext_terms_idx.npy"), np.array(starts, dtype=np.int64))
+    np.save(_w("ext_terms_idx.npy"), np.array(starts, dtype=np.int64))
     keys, sid, wpos = np.concatenate(keys), np.concatenate(sid), np.concatenate(wpos)
     order = np.argsort(keys, kind="stable")
-    np.save(_p("ext_keys.npy"), keys[order])
-    np.save(_p("ext_sid.npy"), sid[order])
-    np.save(_p("ext_pos.npy"), wpos[order])
+    np.save(_w("ext_keys.npy"), keys[order])
+    np.save(_w("ext_sid.npy"), sid[order])
+    np.save(_w("ext_pos.npy"), wpos[order])
     json.dump({"seqs_mtime": os.path.getmtime(SEQS), "longer": longer, "windows": len(keys)},
-              open(_p("ext_meta.json"), "w"))
+              open(_w("ext_meta.json"), "w"))
+    _commit()
     print(f"built ext cache: {longer} sequences extended from b-files, {len(keys)} windows in {time.time() - t0:.0f}s",
           file=sys.stderr)
 

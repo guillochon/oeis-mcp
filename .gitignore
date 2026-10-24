@@ -1,4 +1,5 @@
-# OEIS data: oeisdata clone (~680k files, its own git history), seqs.pkl and the search cache (~3.7 GB together).
+# OEIS data: oeisdata clone (~680k files, its own git history; ~35 GB more with the b-files from git lfs),
+# seqs.pkl and the search cache (~3.7 GB).
 data/
 
 __pycache__/
